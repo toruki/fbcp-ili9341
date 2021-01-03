@@ -263,6 +263,11 @@ else()
 	message(FATAL_ERROR "Please specify which display controller to use on command line to CMake!")
 endif()
 
+option(USE_SPI_AUX "If enabled, use spi1 instead of spi0" OFF)
+if (USE_SPI_AUX)
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DUSE_SPI_AUX=1")
+endif()
+
 add_executable(fbcp-ili9341 ${sourceFiles})
 
 target_link_libraries(fbcp-ili9341 pthread bcm_host atomic)

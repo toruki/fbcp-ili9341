@@ -14,6 +14,7 @@
 #define BCM2835_GPIO_BASE                    0x200000   // Address to GPIO register file
 #define BCM2835_SPI0_BASE                    0x204000   // Address to SPI0 register file
 #define BCM2835_TIMER_BASE                   0x3000     // Address to System Timer register file
+#define BCM2835_SPI1_BASE                    0x215000   // Address to SPI1 register file
 
 #define BCM2835_SPI0_CS_RXF                  0x00100000 // Receive FIFO is full
 #define BCM2835_SPI0_CS_RXR                  0x00080000 // FIFO needs reading
@@ -48,11 +49,19 @@
 #define BCM2835_SPI0_CS_CPHA_SHIFT                 2
 #define BCM2835_SPI0_CS_CS_SHIFT                   0
 
+#ifdef USE_SPI_AUX
+#define GPIO_SPI0_MOSI  20        // Pin P1-19, MOSI when SPI0 in use
+#define GPIO_SPI0_MISO  19        // Pin P1-21, MISO when SPI0 in use
+#define GPIO_SPI0_CLK   21        // Pin P1-23, CLK when SPI0 in use
+#define GPIO_SPI0_CE0   18        // Pin P1-24, CE0 when SPI0 in use
+#define GPIO_SPI0_CE1   17        // Pin P1-26, CE1 when SPI0 in use
+#else
 #define GPIO_SPI0_MOSI  10        // Pin P1-19, MOSI when SPI0 in use
 #define GPIO_SPI0_MISO   9        // Pin P1-21, MISO when SPI0 in use
 #define GPIO_SPI0_CLK   11        // Pin P1-23, CLK when SPI0 in use
 #define GPIO_SPI0_CE0    8        // Pin P1-24, CE0 when SPI0 in use
 #define GPIO_SPI0_CE1    7        // Pin P1-26, CE1 when SPI0 in use
+#endif
 
 extern volatile void *bcm2835;
 
@@ -71,6 +80,106 @@ extern volatile GPIORegisterFile *gpio;
 #define SET_GPIO(pin) gpio->gpset[0] = 1 << (pin) // Pin must be (0-31)
 #define CLEAR_GPIO(pin) gpio->gpclr[0] = 1 << (pin) // Pin must be (0-31)
 
+#ifdef USE_SPI_AUX
+extern uint32_t spiDefaults;
+
+typedef struct SPIRegisterFile
+{
+  uint32_t IRQ;
+  uint32_t ENABLES;
+  uint32_t dummy_02;
+  uint32_t dummy_03;
+  uint32_t dummy_04;
+  uint32_t dummy_05;
+  uint32_t dummy_06;
+  uint32_t dummy_07;
+  uint32_t dummy_08;
+  uint32_t dummy_09;
+  uint32_t dummy_10;
+  uint32_t dummy_11;
+  uint32_t dummy_12;
+  uint32_t dummy_13;
+  uint32_t dummy_14;
+  uint32_t dummy_15;
+  uint32_t MU_IO_REG;
+  uint32_t MU_IER_REG;
+  uint32_t MU_IIR_REG;
+  uint32_t MU_LCR_REG;
+  uint32_t MU_MCR_REG;
+  uint32_t MU_LSR_REG;
+  uint32_t MU_MSR_REG;
+  uint32_t MU_SCRATCH;
+  uint32_t MU_CNTL_REG;
+  uint32_t MU_STAT_REG;
+  uint32_t MU_BAUD_REG;
+  uint32_t dummy_27;
+  uint32_t dummy_28;
+  uint32_t dummy_29;
+  uint32_t dummy_30;
+  uint32_t dummy_31;
+  uint32_t SPI0_CNTL0_REG;
+  uint32_t SPI0_CNTL1_REG;
+  uint32_t SPI0_STAT_REG;
+  uint32_t SPI0_PEEK_REG;
+  uint32_t dummy_36;
+  uint32_t dummy_37;
+  uint32_t dummy_38;
+  uint32_t dummy_39;
+  uint32_t SPI0_IO_REG;
+  uint32_t dummy_41;
+  uint32_t dummy_42;
+  uint32_t dummy_43;
+  uint32_t SPI0_TX_HOLD;
+  uint32_t dummy_45;
+  uint32_t dummy_46;
+  uint32_t dummy_47;
+  uint32_t SPI1_CNTL0_REG;
+  uint32_t SPI1_CNTL1_REG;
+  uint32_t SPI1_STAT_REG;
+  uint32_t SPI1_PEEK_REG;
+  uint32_t dummy_52;
+  uint32_t dummy_53;
+  uint32_t dummy_54;
+  uint32_t dummy_55;
+  uint32_t SPI1_IO_REG;
+  uint32_t dummy_57;
+  uint32_t dummy_58;
+  uint32_t dummy_59;
+  uint32_t SPI1_TX_HOLD;
+} SPIRegisterFile;
+
+#define AUXENB_SPI2 (1<<2)
+#define AUXENB_SPI1 (1<<1)
+#define AUXENB_UART (1<<0)
+
+#define AUXSPI_CNTL0_SPEED(x)      ((x)<<20)
+#define AUXSPI_CNTL0_CS(x)         ((x)<<17)
+#define AUXSPI_CNTL0_POSTINP         (1<<16)
+#define AUXSPI_CNTL0_VAR_CS          (1<<15)
+#define AUXSPI_CNTL0_VAR_WIDTH       (1<<14)
+#define AUXSPI_CNTL0_DOUT_HOLD(x)  ((x)<<12)
+#define AUXSPI_CNTL0_ENABLE          (1<<11)
+#define AUXSPI_CNTL0_IN_RISING(x)  ((x)<<10)
+#define AUXSPI_CNTL0_CLR_FIFOS       (1<<9)
+#define AUXSPI_CNTL0_OUT_RISING(x) ((x)<<8)
+#define AUXSPI_CNTL0_INVERT_CLK(x) ((x)<<7)
+#define AUXSPI_CNTL0_MSB_FIRST(x)  ((x)<<6)
+#define AUXSPI_CNTL0_SHIFT_LEN(x)  ((x)<<0)
+
+#define AUXSPI_CNTL1_CS_HIGH(x)  ((x)<<8)
+#define AUXSPI_CNTL1_TX_IRQ        (1<<7)
+#define AUXSPI_CNTL1_DONE_IRQ      (1<<6)
+#define AUXSPI_CNTL1_MSB_FIRST(x)((x)<<1)
+#define AUXSPI_CNTL1_KEEP_INPUT    (1<<0)
+
+#define AUXSPI_STAT_TX_FIFO(x) ((x)<<28)
+#define AUXSPI_STAT_RX_FIFO(x) ((x)<<20)
+#define AUXSPI_STAT_TX_FULL      (1<<10)
+#define AUXSPI_STAT_TX_EMPTY     (1<<9)
+#define AUXSPI_STAT_RX_EMPTY     (1<<7)
+#define AUXSPI_STAT_BUSY         (1<<6)
+#define AUXSPI_STAT_BITS(x)    ((x)<<0)
+#else
 typedef struct SPIRegisterFile
 {
   uint32_t cs;   // SPI Master Control and Status register
@@ -78,6 +187,7 @@ typedef struct SPIRegisterFile
   uint32_t clk;  // SPI Master Clock Divider
   uint32_t dlen; // SPI Master Number of DMA Bytes to Write
 } SPIRegisterFile;
+#endif
 extern volatile SPIRegisterFile *spi;
 
 // Defines the size of the SPI task memory buffer in bytes. This memory buffer can contain two frames worth of tasks at maximum,
@@ -134,6 +244,7 @@ typedef struct __attribute__((packed)) SPITask
 
 } SPITask;
 
+#ifndef USE_SPI_AUX
 #define BEGIN_SPI_COMMUNICATION() do { spi->cs = BCM2835_SPI0_CS_TA | DISPLAY_SPI_DRIVE_SETTINGS; } while(0)
 #define END_SPI_COMMUNICATION()  do { \
     uint32_t cs; \
@@ -153,7 +264,11 @@ typedef struct __attribute__((packed)) SPITask
         spi->cs = BCM2835_SPI0_CS_CLEAR_RX | BCM2835_SPI0_CS_TA | DISPLAY_SPI_DRIVE_SETTINGS; \
     } \
   } while(0)
-
+#else
+#define BEGIN_SPI_COMMUNICATION()
+#define END_SPI_COMMUNICATION()
+#define WAIT_SPI_FINISHED()
+#endif
 
 // A convenience for defining and dispatching SPI task bytes inline
 #define SPI_TRANSFER(command, ...) do { \

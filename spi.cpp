@@ -51,8 +51,19 @@ volatile SPIRegisterFile *spi = 0;
 // that Pi 3 Model B does allow reading this as a u64 load, and even when unaligned, it is around 30% faster to do so compared to loading in parts "lo | (hi << 32)".
 volatile uint64_t *systemTimerRegister = 0;
 
+#ifdef USE_SPI_AUX
+uint32_t spiDefaults =
+  AUXSPI_CNTL0_SPEED(SPI_BUS_CLOCK_DIVISOR) |
+  AUXSPI_CNTL0_IN_RISING(1)  |
+  AUXSPI_CNTL0_OUT_RISING(0) |
+  AUXSPI_CNTL0_INVERT_CLK(0) |
+  AUXSPI_CNTL0_MSB_FIRST(1)  |
+  AUXSPI_CNTL0_SHIFT_LEN(8);
+#endif
+
 void DumpSPICS(uint32_t reg)
 {
+#ifndef USE_SPI_AUX
   PRINT_FLAG(BCM2835_SPI0_CS_CS);
   PRINT_FLAG(BCM2835_SPI0_CS_CPHA);
   PRINT_FLAG(BCM2835_SPI0_CS_CPOL);
@@ -70,6 +81,7 @@ void DumpSPICS(uint32_t reg)
   PRINT_FLAG(BCM2835_SPI0_CS_RXF);
   printf("SPI0 DLEN: %u\n", spi->dlen);
   printf("SPI0 CE0 register: %d\n", GET_GPIO(GPIO_SPI0_CE0) ? 1 : 0);
+#endif
 }
 
 #ifdef RUN_WITH_REALTIME_THREAD_PRIORITY
@@ -99,7 +111,11 @@ void SetRealtimeThreadPriority()
 // a value != 0 or 1 gets rid of an excess idle clock cycle that is present when transmitting each byte. (by default in Polled SPI Mode each 8 bits transfer in 9 clocks)
 // With DLEN=2 each byte is clocked to the bus in 8 cycles, observed to improve max throughput from 56.8mbps to 63.3mbps (+11.4%, quite close to the theoretical +12.5%)
 // https://www.raspberrypi.org/forums/viewtopic.php?f=44&t=181154
+#ifndef USE_SPI_AUX
 #define UNLOCK_FAST_8_CLOCKS_SPI() (spi->dlen = 2)
+#else
+#define UNLOCK_FAST_8_CLOCKS_SPI()
+#endif
 
 #ifdef ALL_TASKS_SHOULD_DMA
 bool previousTaskWasSPI = true;
@@ -250,6 +266,7 @@ void Interleave16BitSPITaskTo32Bit(SPITask *task)
 
 #endif // ~SPI_3WIRE_PROTOCOL
 
+#ifndef USE_SPI_AUX
 void WaitForPolledSPITransferToFinish()
 {
   uint32_t cs;
@@ -259,6 +276,7 @@ void WaitForPolledSPITransferToFinish()
 
   if ((cs & BCM2835_SPI0_CS_RXD)) spi->cs = BCM2835_SPI0_CS_CLEAR_RX | BCM2835_SPI0_CS_TA | DISPLAY_SPI_DRIVE_SETTINGS;
 }
+#endif
 
 #ifdef ALL_TASKS_SHOULD_DMA
 
@@ -267,6 +285,7 @@ void WaitForPolledSPITransferToFinish()
 #endif
 
 // Synchonously performs a single SPI command byte + N data bytes transfer on the calling thread. Call in between a BEGIN_SPI_COMMUNICATION() and END_SPI_COMMUNICATION() pair.
+
 void RunSPITask(SPITask *task)
 {
   uint32_t cs;
@@ -333,7 +352,7 @@ void RunSPITask(SPITask *task)
     previousTaskWasSPI = true;
   }
 }
-#else
+#elif !defined(USE_SPI_AUX)
 
 void RunSPITask(SPITask *task)
 {
@@ -403,6 +422,43 @@ void RunSPITask(SPITask *task)
 #ifdef DISPLAY_NEEDS_CHIP_SELECT_SIGNAL
   END_SPI_COMMUNICATION();
 #endif
+}
+#else
+// USE_SPI_AUX
+void RunSPITask(SPITask *task)
+{
+  uint8_t *tStart = task->PayloadStart();
+  uint8_t *tEnd = task->PayloadEnd();
+  const uint32_t payloadSize = tEnd - tStart;
+  uint8_t *tPrefillEnd = tStart + MIN(15, payloadSize);
+
+  spi->SPI0_CNTL0_REG = AUXSPI_CNTL0_ENABLE | spiDefaults;
+  spi->SPI0_CNTL1_REG = AUXSPI_CNTL1_MSB_FIRST(1);
+  //CLEAR_GPIO(GPIO_SPI0_CE0);
+
+  // An SPI transfer to the display always starts with one control (command) byte, followed by N data bytes.
+  CLEAR_GPIO(GPIO_TFT_DATA_CONTROL);
+
+  spi->SPI0_IO_REG = task->cmd << 24;
+  while (spi->SPI0_STAT_REG & AUXSPI_STAT_BUSY);
+
+  SET_GPIO(GPIO_TFT_DATA_CONTROL);
+  spi->SPI0_CNTL0_REG = AUXSPI_CNTL0_ENABLE | spiDefaults;
+  spi->SPI0_CNTL1_REG = AUXSPI_CNTL1_MSB_FIRST(1);
+
+  while(tStart < tEnd) {
+    uint32_t statusReg = spi->SPI0_STAT_REG;
+    uint32_t txFull = (((statusReg>>28)&15) > 2);
+    if (! txFull) {
+      if (tStart != (tEnd - 1)) {
+	spi->SPI0_TX_HOLD = (*tStart++) << 24;
+      } else {
+	spi->SPI0_IO_REG = (*tStart++) << 24;
+      }
+    }
+  }
+  while(spi->SPI0_STAT_REG & AUXSPI_STAT_BUSY) /*nop*/;
+  //SET_GPIO(GPIO_SPI0_CE0);
 }
 #endif
 
@@ -507,13 +563,23 @@ int InitSPI()
   gpio = (volatile GPIORegisterFile*)((uintptr_t)bcm2835);
 
 #else // Userland version
+  printf("BCM2835_GPIO_BASE: %p\n", BCM2835_GPIO_BASE);
+  printf("BCM2835_SPI0_BASE: %p\n", BCM2835_SPI0_BASE);
+  printf("BCM2835_SPI1_BASE: %p\n", BCM2835_SPI1_BASE);
   // Memory map GPIO and SPI peripherals for direct access
   mem_fd = open("/dev/mem", O_RDWR|O_SYNC);
   if (mem_fd < 0) FATAL_ERROR("can't open /dev/mem (run as sudo)");
-  printf("bcm_host_get_peripheral_address: %p, bcm_host_get_peripheral_size: %u, bcm_host_get_sdram_address: %p\n", bcm_host_get_peripheral_address(), bcm_host_get_peripheral_size(), bcm_host_get_sdram_address());
+  printf("bcm_host_get_peripheral_address: %p, bcm_host_get_peripheral_size: %p, bcm_host_get_sdram_address: %p\n", bcm_host_get_peripheral_address(), bcm_host_get_peripheral_size(), bcm_host_get_sdram_address());
   bcm2835 = mmap(NULL, bcm_host_get_peripheral_size(), (PROT_READ | PROT_WRITE), MAP_SHARED, mem_fd, bcm_host_get_peripheral_address());
   if (bcm2835 == MAP_FAILED) FATAL_ERROR("mapping /dev/mem failed");
+  printf("PERIPHERAL_ADDRESS: %p\n", bcm2835);
+#ifdef USE_SPI_AUX
+  spi = (volatile SPIRegisterFile*)((uintptr_t)bcm2835 + BCM2835_SPI1_BASE);
+  int altMode = 0x03;
+#else
   spi = (volatile SPIRegisterFile*)((uintptr_t)bcm2835 + BCM2835_SPI0_BASE);
+  int altMode = 0x04;
+#endif
   gpio = (volatile GPIORegisterFile*)((uintptr_t)bcm2835 + BCM2835_GPIO_BASE);
   systemTimerRegister = (volatile uint64_t*)((uintptr_t)bcm2835 + BCM2835_TIMER_BASE + 0x04); // Generates an unaligned 64-bit pointer, but seems to be fine.
   // TODO: On graceful shutdown, (ctrl-c signal?) close(mem_fd)
@@ -532,18 +598,18 @@ int InitSPI()
 #ifdef GPIO_TFT_DATA_CONTROL
   SET_GPIO_MODE(GPIO_TFT_DATA_CONTROL, 0x01); // Data/Control pin to output (0x01)
 #endif
-  SET_GPIO_MODE(GPIO_SPI0_MISO, 0x04);
-  SET_GPIO_MODE(GPIO_SPI0_MOSI, 0x04);
-  SET_GPIO_MODE(GPIO_SPI0_CLK, 0x04);
+  SET_GPIO_MODE(GPIO_SPI0_MISO, altMode);
+  SET_GPIO_MODE(GPIO_SPI0_MOSI, altMode);
+  SET_GPIO_MODE(GPIO_SPI0_CLK, altMode);
 
-#ifdef DISPLAY_NEEDS_CHIP_SELECT_SIGNAL
+#if defined(DISPLAY_NEEDS_CHIP_SELECT_SIGNAL) || defined(USE_SPI_AUX)
   // The Adafruit 1.65" 240x240 ST7789 based display is unique compared to others that it does want to see the Chip Select line go
   // low and high to start a new command. For that display we let hardware SPI toggle the CS line, and actually run TA<-0 and TA<-1
   // transitions to let the CS line live. For most other displays, we just set CS line always enabled for the display throughout
   // fbcp-ili9341 lifetime, which is a tiny bit faster.
-  SET_GPIO_MODE(GPIO_SPI0_CE0, 0x04);
+  SET_GPIO_MODE(GPIO_SPI0_CE0, altMode);
 #ifdef DISPLAY_USES_CS1
-  SET_GPIO_MODE(GPIO_SPI0_CE1, 0x04);
+  SET_GPIO_MODE(GPIO_SPI0_CE1, altMode);
 #endif
 #else
   // Set the SPI 0 pin explicitly to output, and enable chip select on the line by setting it to low.
@@ -556,8 +622,18 @@ int InitSPI()
 #endif
 #endif
 
+#ifndef USE_SPI_AUX
   spi->cs = BCM2835_SPI0_CS_CLEAR | DISPLAY_SPI_DRIVE_SETTINGS; // Initialize the Control and Status register to defaults: CS=0 (Chip Select), CPHA=0 (Clock Phase), CPOL=0 (Clock Polarity), CSPOL=0 (Chip Select Polarity), TA=0 (Transfer not active), and reset TX and RX queues.
   spi->clk = SPI_BUS_CLOCK_DIVISOR; // Clock Divider determines SPI bus speed, resulting speed=256MHz/clk
+#else
+  spi->ENABLES |= AUXENB_SPI1;
+  spi->SPI0_CNTL0_REG = AUXSPI_CNTL0_ENABLE | AUXSPI_CNTL0_CLR_FIFOS;
+  usleep(10*1000);
+  spi->SPI0_CNTL0_REG = AUXSPI_CNTL0_ENABLE | spiDefaults;
+  spi->SPI0_CNTL1_REG = AUXSPI_CNTL1_MSB_FIRST(1);
+  printf("SPI0_CNTL0_REG: %p\n", &spi->SPI0_CNTL0_REG);
+  printf("SPI0_CNTL1_REG: %p\n", &spi->SPI0_CNTL1_REG);
+#endif
 #endif
 
   // Initialize SPI thread task buffer memory
@@ -630,7 +706,11 @@ void DeinitSPI()
   DeinitDMA();
 #endif
 
+#ifndef USE_SPI_AUX
   spi->cs = BCM2835_SPI0_CS_CLEAR | DISPLAY_SPI_DRIVE_SETTINGS;
+#else
+  spi->ENABLES &= (~AUXENB_SPI1);
+#endif
 
 #ifndef KERNEL_MODULE_CLIENT
 #ifdef GPIO_TFT_DATA_CONTROL

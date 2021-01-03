@@ -1,21 +1,28 @@
 #include "config.h"
 #include "display.h"
 #include "spi.h"
+#include <stdio.h>
 
 #include <memory.h>
 
 void ClearScreen()
 {
+#ifdef DISPLAY_OFFSET_X
+  uint32_t x = DISPLAY_OFFSET_X;
+#else
+  uint32_t x = 0;
+#endif
+  uint32_t lastX = DISPLAY_WIDTH + x - 1;
   for(int y = 0; y < DISPLAY_HEIGHT; ++y)
   {
 #ifdef DISPLAY_SPI_BUS_IS_16BITS_WIDE
-    SPI_TRANSFER(DISPLAY_SET_CURSOR_X, 0, 0, 0, 0, 0, (DISPLAY_WIDTH-1) >> 8, 0, (DISPLAY_WIDTH-1) & 0xFF);
+    SPI_TRANSFER(DISPLAY_SET_CURSOR_X, 0, (uint8_t)(x >> 8), 0, (uint8_t)(x & 0xFF), 0, (uint8_t)(lastX >> 8), 0, (uint8_t)(lastX & 0xFF));
     SPI_TRANSFER(DISPLAY_SET_CURSOR_Y, 0, (uint8_t)(y >> 8), 0, (uint8_t)(y & 0xFF), 0, (DISPLAY_HEIGHT-1) >> 8, 0, (DISPLAY_HEIGHT-1) & 0xFF);
 #elif defined(DISPLAY_SET_CURSOR_IS_8_BIT)
-    SPI_TRANSFER(DISPLAY_SET_CURSOR_X, 0, DISPLAY_WIDTH-1);
+    SPI_TRANSFER(DISPLAY_SET_CURSOR_X, (uint8_t)x, lastX);
     SPI_TRANSFER(DISPLAY_SET_CURSOR_Y, (uint8_t)y, DISPLAY_HEIGHT-1);
 #else
-    SPI_TRANSFER(DISPLAY_SET_CURSOR_X, 0, 0, (DISPLAY_WIDTH-1) >> 8, (DISPLAY_WIDTH-1) & 0xFF);
+    SPI_TRANSFER(DISPLAY_SET_CURSOR_X, (uint8_t)(x >> 8), (uint8_t)(x & 0xFF), (uint8_t)(lastX >> 8), (uint8_t)(lastX & 0xFF));
     SPI_TRANSFER(DISPLAY_SET_CURSOR_Y, (uint8_t)(y >> 8), (uint8_t)(y & 0xFF), (DISPLAY_HEIGHT-1) >> 8, (DISPLAY_HEIGHT-1) & 0xFF);
 #endif
     SPITask *clearLine = AllocTask(DISPLAY_WIDTH*SPI_BYTESPERPIXEL);

@@ -112,6 +112,10 @@ int main()
 
   InitGPU();
 
+#ifdef DISPLAY_OFFSET_X
+  displayXOffset += DISPLAY_OFFSET_X;
+#endif
+
   spans = (Span*)Malloc((gpuFrameWidth * gpuFrameHeight / 2) * sizeof(Span), "main() task spans");
   int size = gpuFramebufferSizeBytes;
 #ifdef USE_GPU_VSYNC

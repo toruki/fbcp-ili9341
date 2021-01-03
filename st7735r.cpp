@@ -6,6 +6,7 @@
 
 #include <memory.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 void InitST7735R()
 {
@@ -22,7 +23,9 @@ void InitST7735R()
 #endif
 
   // Do the initialization with a very low SPI bus speed, so that it will succeed even if the bus speed chosen by the user is too high.
+#ifndef USE_SPI_AUX
   spi->clk = 34;
+#endif
   __sync_synchronize();
 
   BEGIN_SPI_COMMUNICATION();
@@ -137,7 +140,9 @@ void InitST7735R()
 
   // And speed up to the desired operation speed finally after init is done.
   usleep(10 * 1000); // Delay a bit before restoring CLK, or otherwise this has been observed to cause the display not init if done back to back after the clear operation above.
+#ifndef USE_SPI_AUX
   spi->clk = SPI_BUS_CLOCK_DIVISOR;
+#endif
 }
 
 void TurnDisplayOff()
