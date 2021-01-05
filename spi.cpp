@@ -698,7 +698,9 @@ int InitSPI()
 void DeinitSPI()
 {
 #ifdef USE_SPI_THREAD
-  pthread_join(spiThread, NULL);
+  //pthread_join(spiThread, NULL);
+  timespec ts = {1, 0};
+  pthread_timedjoin_np(spiThread, nullptr, &ts);
   spiThread = (pthread_t)0;
 #endif
   DeinitSPIDisplay();

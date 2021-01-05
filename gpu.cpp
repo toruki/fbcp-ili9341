@@ -239,6 +239,8 @@ void *gpu_polling_thread(void*)
       syscall(SYS_futex, &numNewGpuFrames, FUTEX_WAKE, 1, 0, 0, 0); // Wake the main thread if it was sleeping to get a new frame
     }
   }
+  __atomic_fetch_add(&numNewGpuFrames, 1, __ATOMIC_SEQ_CST);
+  syscall(SYS_futex, &numNewGpuFrames, FUTEX_WAKE, 1, 0, 0, 0); // Wake the main thread if it was sleeping to get a new frame
   pthread_exit(0);
 }
 
