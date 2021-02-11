@@ -5,6 +5,7 @@
 #include <syslog.h> // syslog, LOG_ERR
 #include <stdio.h> // fprintf
 #include <math.h> // floor
+#include <unistd.h>
 
 #include "config.h"
 #include "gpu.h"
@@ -15,6 +16,11 @@
 #include "mem_alloc.h"
 
 bool MarkProgramQuitting(void);
+
+#ifdef DISPLAY_FLIP_ORIENTATION_IN_SOFTWARE
+static uint16_t *tempTransposeBufferBase = 0;
+#endif
+static bool reinitDispmanx();
 
 // Uncomment these build options to make the display output a random performance test pattern instead of the actual
 // display content. Used to debug/measure performance.
@@ -32,6 +38,7 @@ int frameTimeHistorySize = 0;
 
 FrameHistory frameTimeHistory[FRAME_HISTORY_MAX_SIZE] = {};
 
+uint16_t *videoCoreFramebufferBase[2] = {};
 uint16_t *videoCoreFramebuffer[2] = {};
 volatile int numNewGpuFrames = 0;
 
@@ -123,9 +130,13 @@ bool SnapshotFramebuffer(uint16_t *destination)
   int failed = vc_dispmanx_snapshot(display, screen_resource, (DISPMANX_TRANSFORM_T)0);
   if (failed)
   {
-    // We cannot do much better here (or do not know what to do), it looks like if vc_dispmanx_snapshot() fails once, it will crash if attempted to be called again, and it will not recover. We can only terminate here. Sad :/
-    printf("vc_dispmanx_snapshot() failed with return code %d! If this appears related to a change in HDMI/display resolution, see https://github.com/juj/fbcp-ili9341/issues/28 and https://github.com/raspberrypi/userland/issues/461 (try setting fbcp-ili9341 up as an infinitely restarting system service to recover)\n", failed);
-    MarkProgramQuitting();
+    printf("!!! vc_dispmanx_snapshot() failed with return code %d !!!\n", failed);
+    if (! reinitDispmanx()) {
+      // We cannot do much better here (or do not know what to do), it looks like if vc_dispmanx_snapshot() fails once,
+      // it will crash if attempted to be called again, and it will not recover. We can only terminate here. Sad :/
+      printf("vc_dispmanx_snapshot() failed with return code %d! If this appears related to a change in HDMI/display resolution, see https://github.com/juj/fbcp-ili9341/issues/28 and https://github.com/raspberrypi/userland/issues/461 (try setting fbcp-ili9341 up as an infinitely restarting system service to recover)\n", failed);
+      MarkProgramQuitting();
+    }
     return false;
   }
   // BUG in vc_dispmanx_resource_read_data(!!): If one is capturing a small subrectangle of a large screen resource rectangle, the destination pointer 
@@ -138,10 +149,10 @@ bool SnapshotFramebuffer(uint16_t *destination)
   const int pixelWidth = gpuFrameHeight+excessPixelsTop+excessPixelsBottom;
   const int pixelHeight = gpuFrameWidth + excessPixelsLeft + excessPixelsRight;
   const int stride = RoundUpToMultipleOf(pixelWidth*sizeof(uint16_t), 32);
-  if (!tempTransposeBuffer)
+  if (!tempTransposeBufferBase)
   {
-    tempTransposeBuffer = (uint16_t *)Malloc(pixelHeight * stride * 2, "gpu.cpp tempTransposeBuffer");
-    tempTransposeBuffer += pixelHeight * (stride>>1);
+    tempTransposeBufferBase = (uint16_t *)Malloc(pixelHeight * stride * 2, "gpu.cpp tempTransposeBuffer");
+    tempTransposeBuffer = tempTransposeBufferBase + pixelHeight * (stride>>1);
   }
   uint16_t *destPtr = tempTransposeBuffer - excessPixelsLeft * (stride >> 1) - excessPixelsTop;
 #else
@@ -337,15 +348,19 @@ uint64_t PredictNextFrameArrivalTime()
   else return nextFrameArrivalTime;
 }
 
-void InitGPU()
+static bool initDispmanx()
 {
-  // Initialize GPU frame grabbing subsystem
-  bcm_host_init();
   display = vc_dispmanx_display_open(0);
-  if (!display) FATAL_ERROR("vc_dispmanx_display_open failed! Make sure to have hdmi_force_hotplug=1 setting in /boot/config.txt");
+  if (!display) {
+    LOG("vc_dispmanx_display_open failed! Make sure to have hdmi_force_hotplug=1 setting in /boot/config.txt");
+    return false;
+  }
   DISPMANX_MODEINFO_T display_info;
   int ret = vc_dispmanx_display_get_info(display, &display_info);
-  if (ret) FATAL_ERROR("vc_dispmanx_display_get_info failed!");
+  if (ret) {
+    LOG("vc_dispmanx_display_get_info failed!");
+    return false;
+  }
 
 #ifdef DISPLAY_FLIP_ORIENTATION_IN_SOFTWARE
   // Pretend that the display framebuffer would be in portrait mode for the purposes of size computation etc.
@@ -450,12 +465,12 @@ void InitGPU()
   // corner of the subrectangle to capture. Therefore do dirty pointer arithmetic to adjust for this. To make this safe, videoCoreFramebuffer is allocated
   // double its needed size so that this adjusted pointer does not reference outside allocated memory (if it did, vc_dispmanx_resource_read_data() was seen
   // to randomly fail and then subsequently hang if called a second time)
-  videoCoreFramebuffer[0] = (uint16_t *)Malloc(gpuFramebufferSizeBytes*2, "gpu.cpp framebuffer0");
-  videoCoreFramebuffer[1] = (uint16_t *)Malloc(gpuFramebufferSizeBytes*2, "gpu.cpp framebuffer1");
-  memset(videoCoreFramebuffer[0], 0, gpuFramebufferSizeBytes*2);
-  memset(videoCoreFramebuffer[1], 0, gpuFramebufferSizeBytes*2);
-  videoCoreFramebuffer[0] += (gpuFramebufferSizeBytes>>1);
-  videoCoreFramebuffer[1] += (gpuFramebufferSizeBytes>>1);
+  videoCoreFramebufferBase[0] = (uint16_t *)Malloc(gpuFramebufferSizeBytes*2, "gpu.cpp framebuffer0");
+  videoCoreFramebufferBase[1] = (uint16_t *)Malloc(gpuFramebufferSizeBytes*2, "gpu.cpp framebuffer1");
+  memset(videoCoreFramebufferBase[0], 0, gpuFramebufferSizeBytes*2);
+  memset(videoCoreFramebufferBase[1], 0, gpuFramebufferSizeBytes*2);
+  videoCoreFramebuffer[0] = videoCoreFramebufferBase[0] + (gpuFramebufferSizeBytes>>1);
+  videoCoreFramebuffer[1] = videoCoreFramebufferBase[1] + (gpuFramebufferSizeBytes>>1);
 
   syslog(LOG_INFO, "GPU display is %dx%d. SPI display is %dx%d with drawable area of %dx%d. Applying scaling factor horiz=%.2fx & vert=%.2fx, xOffset: %d, yOffset: %d, scaledWidth: %d, scaledHeight: %d", display_info.width, display_info.height, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_DRAWABLE_WIDTH, DISPLAY_DRAWABLE_HEIGHT, scalingFactorWidth, scalingFactorHeight, displayXOffset, displayYOffset, scaledWidth, scaledHeight);
   printf("Source GPU display is %dx%d. Output SPI display is %dx%d with a drawable area of %dx%d. Applying scaling factor horiz=%.2fx & vert=%.2fx, xOffset: %d, yOffset: %d, scaledWidth: %d, scaledHeight: %d\n", display_info.width, display_info.height, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_DRAWABLE_WIDTH, DISPLAY_DRAWABLE_HEIGHT, scalingFactorWidth, scalingFactorHeight, displayXOffset, displayYOffset, scaledWidth, scaledHeight);
@@ -469,14 +484,62 @@ void InitGPU()
   screen_resource = vc_dispmanx_resource_create(VC_IMAGE_RGB565, scaledWidth + excessPixelsLeft + excessPixelsRight, scaledHeight + excessPixelsTop + excessPixelsBottom, &image_prt);
   vc_dispmanx_rect_set(&rect, excessPixelsLeft, excessPixelsTop, scaledWidth, scaledHeight);
 #endif
-  if (!screen_resource) FATAL_ERROR("vc_dispmanx_resource_create failed!");
+  if (!screen_resource) {
+    LOG("vc_dispmanx_resource_create failed!");
+    return false;
+  }
   printf("GPU grab rectangle is offset x=%d,y=%d, size w=%dxh=%d, aspect ratio=%f\n", excessPixelsLeft, excessPixelsTop, scaledWidth, scaledHeight, (double)scaledWidth / scaledHeight);
 
 #ifdef USE_GPU_VSYNC
   // Register to receive vsync notifications. This is a heuristic, since the application might not be locked at vsync, and even
   // if it was, this signal is not a guaranteed edge trigger for availability of new frames.
   vc_dispmanx_vsync_callback(display, VsyncCallback, 0);
-#else
+#endif
+  return true;
+}
+
+static void deinitDispmanx()
+{
+#ifdef DISPLAY_FLIP_ORIENTATION_IN_SOFTWARE
+  free(tempTransposeBufferBase);
+  tempTransposeBufferBase = nullptr;
+#endif
+  free(videoCoreFramebufferBase[0]);
+  free(videoCoreFramebufferBase[1]);
+  videoCoreFramebufferBase[0] = nullptr;
+  videoCoreFramebufferBase[1] = nullptr;
+  if (screen_resource)
+  {
+    vc_dispmanx_resource_delete(screen_resource);
+    screen_resource = 0;
+  }
+  if (display)
+  {
+#ifdef USE_GPU_VSYNC
+    vc_dispmanx_vsync_callback(display, NULL, 0);
+#endif
+    vc_dispmanx_display_close(display);
+    display = 0;
+  }
+}
+
+static bool reinitDispmanx()
+{
+  deinitDispmanx();
+  usleep((1000 + (rand() & 0x3ff)) * 1000);
+  return initDispmanx();
+}
+
+void InitGPU()
+{
+  // Initialize GPU frame grabbing subsystem
+  bcm_host_init();
+
+  if (!initDispmanx()) {
+    FATAL_ERROR("InitGPU: initDispmanx() failed.");
+  }
+  
+#ifndef USE_GPU_VSYNC
   // Record some fake samples to frame rate histogram to fast track it to warm state.
   uint64_t now = tick();
   for(int i = 0; i < HISTOGRAM_SIZE; ++i)
@@ -496,17 +559,7 @@ void DeinitGPU()
   gpuPollingThread = (pthread_t)0;
 #endif
 
-  if (screen_resource)
-  {
-    vc_dispmanx_resource_delete(screen_resource);
-    screen_resource = 0;
-  }
-
-  if (display)
-  {
-    vc_dispmanx_display_close(display);
-    display = 0;
-  }
+  deinitDispmanx();
 
   bcm_host_deinit();
 }

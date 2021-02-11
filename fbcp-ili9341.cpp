@@ -89,6 +89,52 @@ void ProgramInterruptHandler(int signal)
   syscall(SYS_futex, &numNewGpuFrames, FUTEX_WAKE, 1, 0, 0, 0);
 }
 
+static int curGpuFrameWidth = 0;
+static int curGpuFrameHeight = 0;
+static uint16_t *framebufferOrg[2] = {nullptr, nullptr};
+static uint16_t *framebuffer[2] = {nullptr, nullptr};
+static void initFramebuffers()
+{
+  curGpuFrameWidth = gpuFrameWidth;
+  curGpuFrameHeight = gpuFrameHeight;
+  spans = (Span*)Malloc((gpuFrameWidth * gpuFrameHeight / 2) * sizeof(Span), "main() task spans");
+  printf("Spans: %u x %u = %u\n", gpuFrameWidth, gpuFrameHeight, (gpuFrameWidth * gpuFrameHeight / 2));
+  int size = gpuFramebufferSizeBytes;
+#ifdef USE_GPU_VSYNC
+  // BUG in vc_dispmanx_resource_read_data(!!): If one is capturing a small subrectangle of a large screen resource rectangle, the destination pointer 
+  // is in vc_dispmanx_resource_read_data() incorrectly still taken to point to the top-left corner of the large screen resource, instead of the top-left
+  // corner of the subrectangle to capture. Therefore do dirty pointer arithmetic to adjust for this. To make this safe, videoCoreFramebuffer is allocated
+  // double its needed size so that this adjusted pointer does not reference outside allocated memory (if it did, vc_dispmanx_resource_read_data() was seen
+  // to randomly fail and then subsequently hang if called a second time)
+  size *= 2;
+#endif
+  framebufferOrg[0] = (uint16_t *)Malloc(size, "main() framebuffer0");
+  framebufferOrg[1] = (uint16_t *)Malloc(gpuFramebufferSizeBytes, "main() framebuffer1");
+  framebuffer[0] = framebufferOrg[0];
+  framebuffer[1] = framebufferOrg[1];
+  memset(framebuffer[0], 0, size); // Doublebuffer received GPU memory contents, first buffer contains current GPU memory,
+  memset(framebuffer[1], 0, gpuFramebufferSizeBytes); // second buffer contains whatever the display is currently showing. This allows diffing pixels between the two.
+#ifdef USE_GPU_VSYNC
+  // Due to the above bug. In USE_GPU_VSYNC mode, we directly snapshot to framebuffer[0], so it has to be prepared specially to work around the
+  // dispmanx bug.
+  framebuffer[0] += (gpuFramebufferSizeBytes>>1);
+#endif
+}
+
+static void checkResizeFramebuffers()
+{
+  if (curGpuFrameWidth == gpuFrameWidth && curGpuFrameHeight == gpuFrameHeight) {
+    return;
+  }
+  free(spans);
+  free(framebufferOrg[0]);
+  free(framebufferOrg[1]);
+  spans = nullptr;
+  framebufferOrg[0] = nullptr;
+  framebufferOrg[1] = nullptr;
+  initFramebuffers();
+}
+
 int main()
 {
   signal(SIGINT, ProgramInterruptHandler);
@@ -116,24 +162,7 @@ int main()
   displayXOffset += DISPLAY_OFFSET_X;
 #endif
 
-  spans = (Span*)Malloc((gpuFrameWidth * gpuFrameHeight / 2) * sizeof(Span), "main() task spans");
-  int size = gpuFramebufferSizeBytes;
-#ifdef USE_GPU_VSYNC
-  // BUG in vc_dispmanx_resource_read_data(!!): If one is capturing a small subrectangle of a large screen resource rectangle, the destination pointer 
-  // is in vc_dispmanx_resource_read_data() incorrectly still taken to point to the top-left corner of the large screen resource, instead of the top-left
-  // corner of the subrectangle to capture. Therefore do dirty pointer arithmetic to adjust for this. To make this safe, videoCoreFramebuffer is allocated
-  // double its needed size so that this adjusted pointer does not reference outside allocated memory (if it did, vc_dispmanx_resource_read_data() was seen
-  // to randomly fail and then subsequently hang if called a second time)
-  size *= 2;
-#endif
-  uint16_t *framebuffer[2] = { (uint16_t *)Malloc(size, "main() framebuffer0"), (uint16_t *)Malloc(gpuFramebufferSizeBytes, "main() framebuffer1") };
-  memset(framebuffer[0], 0, size); // Doublebuffer received GPU memory contents, first buffer contains current GPU memory,
-  memset(framebuffer[1], 0, gpuFramebufferSizeBytes); // second buffer contains whatever the display is currently showing. This allows diffing pixels between the two.
-#ifdef USE_GPU_VSYNC
-  // Due to the above bug. In USE_GPU_VSYNC mode, we directly snapshot to framebuffer[0], so it has to be prepared specially to work around the
-  // dispmanx bug.
-  framebuffer[0] += (gpuFramebufferSizeBytes>>1);
-#endif
+  initFramebuffers();
 
   uint32_t curFrameEnd = spiTaskMemory->queueTail;
   uint32_t prevFrameEnd = spiTaskMemory->queueTail;
@@ -182,7 +211,14 @@ int main()
         }
         else
 #endif
-          if (programRunning) syscall(SYS_futex, &numNewGpuFrames, FUTEX_WAIT, 0, 0, 0, 0); // Sleep until the next frame arrives
+        {
+          timespec timeout = { tv_sec: 1, tv_nsec: 0};
+          timeout.tv_sec = 1;
+          timeout.tv_nsec = 0;
+          if (programRunning) syscall(SYS_futex, &numNewGpuFrames, FUTEX_WAIT, 0, &timeout, 0, 0); // Sleep until the next frame arrives
+	  numNewGpuFrames = 1;
+	  break;
+	}
       }
     }
 
@@ -267,6 +303,7 @@ int main()
 #endif
 
       framebufferHasNewChangedPixels = SnapshotFramebuffer(framebuffer[0]);
+      checkResizeFramebuffers();
 #else
       memcpy(framebuffer[0], videoCoreFramebuffer[1], gpuFramebufferSizeBytes);
 #endif
@@ -300,6 +337,7 @@ int main()
         usleep(2000);
         frameObtainedTime = tick();
         framebufferHasNewChangedPixels = SnapshotFramebuffer(framebuffer[0]);
+	checkResizeFramebuffers();
         DrawStatisticsOverlay(framebuffer[0]);
         DrawLowBatteryIcon(framebuffer[0]);
         framebufferHasNewChangedPixels = framebufferHasNewChangedPixels && IsNewFramebuffer(framebuffer[0], framebuffer[1]);
