@@ -59,7 +59,9 @@ void InitST7735R()
     madctl |= MADCTL_ROW_COLUMN_EXCHANGE;
 #endif
 
+#if !defined(DISPLAY_FLIP_HORIZONTALLY)
     madctl |= MADCTL_ROW_ADDRESS_ORDER_SWAP;
+#endif
 
 #if defined(WAVESHARE_ST7789VW_HAT) || defined(WAVESHARE_ST7735S_HAT)
     madctl ^= MADCTL_ROTATE_180_DEGREES;
