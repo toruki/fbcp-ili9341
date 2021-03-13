@@ -159,7 +159,9 @@
 
 // If defined, displays in landscape. Undefine to display in portrait. When changing this, swap
 // values of DISPLAY_WIDTH and DISPLAY_HEIGHT accordingly
-#define DISPLAY_OUTPUT_LANDSCAPE
+#ifndef DISPLAY_OUTPUT_PORTRAIT
+  #define DISPLAY_OUTPUT_LANDSCAPE
+#endif
 
 // If defined, the source video frame is scaled to fit the SPI display by stretching to fit, ignoring
 // aspect ratio. Enabling this will cause e.g. 16:9 1080p source to be stretched to fully cover

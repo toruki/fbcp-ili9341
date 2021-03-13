@@ -159,6 +159,16 @@ if (DISPLAY_ROTATE_180_DEGREES)
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDISPLAY_ROTATE_180_DEGREES")
 endif()
 
+option(DISPLAY_OUTPUT_PORTRAIT "If true, display output portrait" OFF)
+if (DISPLAY_OUTPUT_PORTRAIT)
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDISPLAY_OUTPUT_PORTRAIT")
+endif()
+
+option(DISPLAY_FLIP_HORIZONTALLY "If true, display flip horizontally" OFF)
+if (DISPLAY_FLIP_HORIZONTALLY)
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDISPLAY_FLIP_HORIZONTALLY")
+endif()
+
 option(KEDEI_V63_MPI3501 "Target KeDei 3.5 inch SPI TFTLCD 480*320 16bit/186bit version 6.3 2018/4/9 display (MPI3501)" OFF)
 
 option(USE_DMA_TRANSFERS "If enabled, fbcp-ili9341 utilizes DMA to transfer data to the display. Otherwise, Polled SPI mode is used to drive communication with the SPI display" ON)
